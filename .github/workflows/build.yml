@@ -44,9 +44,9 @@ jobs:
           git clone https://github.com/alliedmodders/ambuild
           pip install ./ambuild
           
-      - name: Create version file
+      - name: Create product version file
         run: |
-          echo "1.0.0" > VERSION
+          echo "1.0.0-dev" > product.version
           
       - name: Configure AMBuild
         run: |
