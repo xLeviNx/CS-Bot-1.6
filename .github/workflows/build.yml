@@ -1,0 +1,70 @@
+name: Manual Build
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    name: Build Project
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        
+      - name: Setup Environment
+        shell: bash
+        run: |
+          echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          
+      - name: Install Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y clang g++-multilib
+          sudo apt-get install -y git python3-pip
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+          
+      - name: Prepare Alliedmodders Directory
+        run: |
+          mkdir alliedmodders
+          
+      - name: Prepare Metamod
+        run: |
+          cd alliedmodders
+          git clone --recursive https://github.com/alliedmodders/metamod-hl1
+          
+      - name: Prepare HLSDK SDK
+        run: |
+          cd alliedmodders
+          git clone --recursive https://github.com/alliedmodders/hlsdk
+          
+      - name: Install AMBuild
+        run: |
+          cd alliedmodders
+          git clone https://github.com/alliedmodders/ambuild
+          pip install ./ambuild
+          
+      - name: Configure AMBuild
+        run: |
+          mkdir build
+          cd build
+          python3 ../alliedmodders/ambuild/ambuild/configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
+          
+      - name: Run AMBuild
+        run: |
+          cd build
+          ambuild
+          
+      - name: Prepare addons directory structure
+        run: |
+          mkdir -p addons/amxmodx/modules
+          
+      - name: Copy built module to addons directory
+        run: |
+          find build -name "*.so" -exec cp {} addons/amxmodx/modules/ \;
+          
+      - name: Upload Binary (Package)
+        uses: actions/upload-artifact@v4
+        with:
+          name: csbot-enabler
+          path: addons/
