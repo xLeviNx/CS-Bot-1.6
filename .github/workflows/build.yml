@@ -48,7 +48,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          python3 ../alliedmodders/ambuild/ambuild/configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
+          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
           
       - name: Run AMBuild
         run: |
