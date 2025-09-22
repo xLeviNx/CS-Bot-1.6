@@ -1,85 +1,132 @@
-name: Build Plugin
+name: Build CS Bot
+
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, develop ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
+
 jobs:
   build:
-    name: Build Project
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            extension: .so
+          - os: windows-latest
+            platform: windows
+            extension: .dll
+
+    runs-on: ${{ matrix.os }}
+    
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-        
-      - name: Setup Environment
-        shell: bash
-        run: |
-          echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          
-      - name: Install Dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y clang g++-multilib
-          sudo apt-get install -y git python3-pip
-          echo "CC=clang" >> $GITHUB_ENV
-          echo "CXX=clang++" >> $GITHUB_ENV
-          
-      - name: Prepare Alliedmodders Directory
-        run: |
-          mkdir alliedmodders
-          
-      - name: Prepare Metamod
-        run: |
-          cd alliedmodders
-          git clone --recursive https://github.com/alliedmodders/metamod-hl1
-          
-      - name: Prepare HLSDK SDK
-        run: |
-          cd alliedmodders
-          git clone --recursive https://github.com/alliedmodders/hlsdk
-          
-      - name: Prepare AMTL in project structure
-        run: |
-          git clone --recursive https://github.com/alliedmodders/amtl public/amtl/amtl
-          cd public/amtl/amtl
-          # Use an older commit that has AutoPtr (from around 2018-2019)
-          git checkout 9c4da9b
-          
-      - name: Install AMBuild
-        run: |
-          cd alliedmodders
-          git clone https://github.com/alliedmodders/ambuild
-          pip install ./ambuild
-          
-      - name: Create product version file
-        run: |
-          echo "1.0.0-dev" > product.version
-          
-      - name: Configure AMBuild
-        run: |
-          mkdir build
-          cd build
-          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
-          
-      - name: Run AMBuild
-        run: |
-          cd build
-          ambuild
-          
-      - name: Prepare addons directory structure
-        run: |
-          mkdir -p addons/amxmodx/modules
-          
-      - name: Copy built module to addons directory
-        run: |
-          find build -name "*.so" -exec cp {} addons/amxmodx/modules/ \;
-          
-      - name: Upload Binary (Package)
-        uses: actions/upload-artifact@v4
-        with:
-          name: csbot-enabler
-          path: addons/
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+
+    # Linux-specific setup
+    - name: Install Linux dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc-multilib g++-multilib
+        sudo apt-get install -y libc6-dev-i386 linux-libc-dev:i386
+
+    # Windows-specific setup
+    - name: Setup MSVC
+      if: matrix.os == 'windows-latest'
+      uses: microsoft/setup-msbuild@v1.3
+
+    - name: Install AMBuild
+      run: |
+        python -m pip install --upgrade pip
+        pip install ambuild
+
+    # Clone AMX Mod X and dependencies
+    - name: Setup AMX Mod X
+      run: |
+        git clone https://github.com/alliedmodders/amxmodx --recursive -b master amxmodx
+        git clone https://github.com/alliedmodders/metamod-p --recursive -b master metamod
+        git clone https://github.com/alliedmodders/hlsdk --recursive -b master hlsdk
+
+    # Linux build
+    - name: Build for Linux
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir build
+        cd build
+        python ../configure.py --enable-optimize --amxx-path=../amxmodx --metamod-path=../metamod --hlsdk-path=../hlsdk
+        ambuild
+
+    # Windows build  
+    - name: Build for Windows
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir build
+        cd build
+        python ../configure.py --enable-optimize --amxx-path=../amxmodx --metamod-path=../metamod --hlsdk-path=../hlsdk
+        ambuild
+      shell: cmd
+
+    # Package artifacts
+    - name: Package Linux artifacts
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir -p release/addons/amxmodx/modules
+        find build -name "*.so" -exec cp {} release/addons/amxmodx/modules/ \;
+        cd release
+        tar -czf ../csbot-linux.tar.gz *
+
+    - name: Package Windows artifacts
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir -p release/addons/amxmodx/modules
+        Get-ChildItem -Path build -Recurse -Filter "*.dll" | Copy-Item -Destination release/addons/amxmodx/modules/
+        Compress-Archive -Path release/* -DestinationPath csbot-windows.zip
+      shell: pwsh
+
+    # Upload artifacts
+    - name: Upload Linux build
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: csbot-linux-${{ github.sha }}
+        path: csbot-linux.tar.gz
+
+    - name: Upload Windows build
+      if: matrix.os == 'windows-latest' 
+      uses: actions/upload-artifact@v4
+      with:
+        name: csbot-windows-${{ github.sha }}
+        path: csbot-windows.zip
+
+  # Create release if this is a tag
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
