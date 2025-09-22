@@ -1,6 +1,10 @@
-name: Manual Build
+name: Build Plugin
 on:
   workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 jobs:
   build:
     name: Build Project
@@ -38,6 +42,11 @@ jobs:
           cd alliedmodders
           git clone --recursive https://github.com/alliedmodders/hlsdk
           
+      - name: Prepare AMTL
+        run: |
+          cd alliedmodders
+          git clone --recursive https://github.com/alliedmodders/amtl
+          
       - name: Install AMBuild
         run: |
           cd alliedmodders
@@ -52,7 +61,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
+          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk --amtl=../alliedmodders/amtl
           
       - name: Run AMBuild
         run: |
