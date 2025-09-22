@@ -46,8 +46,8 @@ jobs:
         run: |
           git clone --recursive https://github.com/alliedmodders/amtl public/amtl/amtl
           cd public/amtl/amtl
-          # Use an older version that has AutoPtr
-          git checkout 1.0.5
+          # Use an older commit that has AutoPtr (from around 2018-2019)
+          git checkout 9c4da9b
           
       - name: Install AMBuild
         run: |
