@@ -45,6 +45,9 @@ jobs:
       - name: Prepare AMTL in project structure
         run: |
           git clone --recursive https://github.com/alliedmodders/amtl public/amtl/amtl
+          cd public/amtl/amtl
+          # Use an older version that has AutoPtr
+          git checkout 1.0.5
           
       - name: Install AMBuild
         run: |
