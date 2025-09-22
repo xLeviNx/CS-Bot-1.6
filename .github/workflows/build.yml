@@ -42,6 +42,10 @@ jobs:
           cd alliedmodders
           git clone --recursive https://github.com/alliedmodders/hlsdk
           
+      - name: Prepare AMTL in project structure
+        run: |
+          git clone --recursive https://github.com/alliedmodders/amtl public/amtl/amtl
+          
       - name: Install AMBuild
         run: |
           cd alliedmodders
