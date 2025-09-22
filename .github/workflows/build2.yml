@@ -1,0 +1,230 @@
+name: Build CS-Bot Cross-Platform
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  release:
+    types: [published]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Setup MSVC
+      uses: microsoft/setup-msbuild@v2
+    
+    - name: Setup Visual Studio environment
+      uses: TheMrMilchmann/setup-msvc-dev@v3
+      with:
+        arch: x86
+    
+    - name: Create build directory
+      run: mkdir build-windows
+    
+    - name: Configure CMake (if CMakeLists.txt exists)
+      run: |
+        if (Test-Path "CMakeLists.txt") {
+          cd build-windows
+          cmake .. -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release
+        }
+      shell: powershell
+    
+    - name: Build with CMake
+      run: |
+        if (Test-Path "CMakeLists.txt") {
+          cd build-windows
+          cmake --build . --config Release --parallel
+        }
+      shell: powershell
+    
+    - name: Build with MSBuild (if .sln/.vcxproj exists)
+      run: |
+        $slnFiles = Get-ChildItem -Path . -Filter "*.sln" -Recurse
+        $vcxprojFiles = Get-ChildItem -Path . -Filter "*.vcxproj" -Recurse
+        
+        if ($slnFiles.Count -gt 0) {
+          foreach ($sln in $slnFiles) {
+            Write-Host "Building solution: $($sln.FullName)"
+            msbuild $sln.FullName /p:Configuration=Release /p:Platform=Win32 /m
+          }
+        } elseif ($vcxprojFiles.Count -gt 0) {
+          foreach ($proj in $vcxprojFiles) {
+            Write-Host "Building project: $($proj.FullName)"
+            msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /m
+          }
+        }
+      shell: powershell
+    
+    - name: Build with Make (MinGW fallback)
+      run: |
+        if (Test-Path "Makefile") {
+          choco install mingw -y
+          $env:PATH += ";C:\tools\mingw64\bin"
+          make clean
+          make PLATFORM=win32
+        }
+      shell: powershell
+    
+    - name: Find and collect Windows artifacts
+      run: |
+        $artifacts = @()
+        $artifacts += Get-ChildItem -Path . -Filter "*.dll" -Recurse | Where-Object { $_.Name -like "*csbot*" }
+        $artifacts += Get-ChildItem -Path . -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "*csbot*" }
+        
+        if ($artifacts.Count -eq 0) {
+          Write-Host "No Windows artifacts found, searching for all .dll files..."
+          $artifacts = Get-ChildItem -Path . -Filter "*.dll" -Recurse
+        }
+        
+        New-Item -ItemType Directory -Force -Path "windows-artifacts"
+        foreach ($artifact in $artifacts) {
+          Copy-Item $artifact.FullName -Destination "windows-artifacts/"
+          Write-Host "Collected: $($artifact.Name)"
+        }
+      shell: powershell
+    
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-build
+        path: windows-artifacts/
+        retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install 32-bit development tools
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-multilib \
+          g++-multilib \
+          libc6-dev-i386 \
+          build-essential \
+          cmake
+    
+    - name: Create build directory
+      run: mkdir -p build-linux
+    
+    - name: Configure CMake (if CMakeLists.txt exists)
+      run: |
+        if [ -f "CMakeLists.txt" ]; then
+          cd build-linux
+          cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="-m32" -DCMAKE_CXX_FLAGS="-m32"
+        fi
+    
+    - name: Build with CMake
+      run: |
+        if [ -f "CMakeLists.txt" ]; then
+          cd build-linux
+          cmake --build . --config Release --parallel $(nproc)
+        fi
+    
+    - name: Build with Make
+      run: |
+        if [ -f "Makefile" ]; then
+          make clean || true
+          make PLATFORM=linux ARCH=i386 -j$(nproc)
+        fi
+    
+    - name: Find and collect Linux artifacts
+      run: |
+        mkdir -p linux-artifacts
+        
+        # Look for .so files with csbot in the name
+        find . -name "*.so" -path "*/build-linux/*" -o -name "*csbot*.so" | while read file; do
+          cp "$file" linux-artifacts/
+          echo "Collected: $(basename $file)"
+        done
+        
+        # If no specific csbot files found, collect all .so files
+        if [ ! "$(ls -A linux-artifacts)" ]; then
+          echo "No csbot .so files found, searching for all .so files..."
+          find . -name "*.so" -type f | while read file; do
+            cp "$file" linux-artifacts/
+            echo "Collected: $(basename $file)"
+          done
+        fi
+        
+        # Also collect any executables
+        find . -type f -executable -name "*csbot*" | while read file; do
+          cp "$file" linux-artifacts/
+          echo "Collected executable: $(basename $file)"
+        done
+        
+        ls -la linux-artifacts/
+    
+    - name: Upload Linux artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-build
+        path: linux-artifacts/
+        retention-days: 30
+
+  create-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' && github.event.action == 'published'
+    
+    steps:
+    - name: Download Windows artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: windows-build
+        path: windows-build/
+    
+    - name: Download Linux artifacts  
+      uses: actions/download-artifact@v4
+      with:
+        name: linux-build
+        path: linux-build/
+    
+    - name: Create release package
+      run: |
+        mkdir -p release-package/addons/csbot_enabler
+        
+        # Copy Windows binaries
+        find windows-build -name "*.dll" -exec cp {} release-package/addons/csbot_enabler/ \;
+        
+        # Copy Linux binaries  
+        find linux-build -name "*.so" -exec cp {} release-package/addons/csbot_enabler/ \;
+        
+        # Create archive
+        cd release-package
+        zip -r ../csbot-enabler-${{ github.event.release.tag_name }}.zip .
+        tar -czf ../csbot-enabler-${{ github.event.release.tag_name }}.tar.gz .
+    
+    - name: Upload release assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./csbot-enabler-${{ github.event.release.tag_name }}.zip
+        asset_name: csbot-enabler-${{ github.event.release.tag_name }}.zip
+        asset_content_type: application/zip
+    
+    - name: Upload release tar.gz
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./csbot-enabler-${{ github.event.release.tag_name }}.tar.gz
+        asset_name: csbot-enabler-${{ github.event.release.tag_name }}.tar.gz
+        asset_content_type: application/gzip
