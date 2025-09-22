@@ -45,20 +45,24 @@ jobs:
         }
       shell: powershell
     
-    - name: Build with MSBuild (if .sln/.vcxproj exists)
+    - name: Upgrade project toolset and build with MSBuild
       run: |
         $slnFiles = Get-ChildItem -Path . -Filter "*.sln" -Recurse
         $vcxprojFiles = Get-ChildItem -Path . -Filter "*.vcxproj" -Recurse
         
+        # First, retarget the solution to use current toolset
         if ($slnFiles.Count -gt 0) {
           foreach ($sln in $slnFiles) {
+            Write-Host "Retargeting solution: $($sln.FullName)"
+            & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\devenv.exe" $sln.FullName /upgrade
+            
             Write-Host "Building solution: $($sln.FullName)"
-            msbuild $sln.FullName /p:Configuration=Release /p:Platform=Win32 /m
+            msbuild $sln.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m
           }
         } elseif ($vcxprojFiles.Count -gt 0) {
           foreach ($proj in $vcxprojFiles) {
             Write-Host "Building project: $($proj.FullName)"
-            msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /m
+            msbuild $proj.FullName /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /m
           }
         }
       shell: powershell
@@ -76,18 +80,40 @@ jobs:
     - name: Find and collect Windows artifacts
       run: |
         $artifacts = @()
-        $artifacts += Get-ChildItem -Path . -Filter "*.dll" -Recurse | Where-Object { $_.Name -like "*csbot*" }
-        $artifacts += Get-ChildItem -Path . -Filter "*.exe" -Recurse | Where-Object { $_.Name -like "*csbot*" }
+        
+        # Search in common output directories first
+        $searchPaths = @(".", "Release", "Debug", "bin", "lib", "output", "build", "module\Release", "module\Debug", "module\msvc\Release", "module\msvc\Debug")
+        
+        foreach ($path in $searchPaths) {
+          if (Test-Path $path) {
+            Write-Host "Searching in: $path"
+            $found = Get-ChildItem -Path $path -Filter "*.dll" -Recurse -ErrorAction SilentlyContinue
+            $artifacts += $found
+            
+            foreach ($file in $found) {
+              Write-Host "Found DLL: $($file.FullName)"
+            }
+          }
+        }
         
         if ($artifacts.Count -eq 0) {
-          Write-Host "No Windows artifacts found, searching for all .dll files..."
-          $artifacts = Get-ChildItem -Path . -Filter "*.dll" -Recurse
+          Write-Host "No DLL files found, searching for all build outputs..."
+          $artifacts = Get-ChildItem -Path . -Filter "*.dll" -Recurse -ErrorAction SilentlyContinue
+          $artifacts += Get-ChildItem -Path . -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
         }
         
         New-Item -ItemType Directory -Force -Path "windows-artifacts"
-        foreach ($artifact in $artifacts) {
-          Copy-Item $artifact.FullName -Destination "windows-artifacts/"
-          Write-Host "Collected: $($artifact.Name)"
+        
+        if ($artifacts.Count -eq 0) {
+          Write-Host "No artifacts found, creating build log for debugging"
+          "Build completed but no DLL files were generated" | Out-File "windows-artifacts\build_log.txt"
+          "Directory structure:" | Out-File "windows-artifacts\build_log.txt" -Append
+          Get-ChildItem -Recurse -Include "*.vcxproj", "*.sln", "*.c", "*.cpp", "*.h" | ForEach-Object { $_.FullName } | Out-File "windows-artifacts\build_log.txt" -Append
+        } else {
+          foreach ($artifact in $artifacts) {
+            Copy-Item $artifact.FullName -Destination "windows-artifacts\"
+            Write-Host "Collected: $($artifact.Name)"
+          }
         }
       shell: powershell
     
@@ -97,6 +123,7 @@ jobs:
         name: windows-build
         path: windows-artifacts/
         retention-days: 30
+      if: always()  # Upload even if build partially failed
 
   build-linux:
     runs-on: ubuntu-latest
@@ -140,33 +167,47 @@ jobs:
         if [ -f "Makefile" ]; then
           make clean || true
           make PLATFORM=linux ARCH=i386 -j$(nproc)
+        elif [ -f "module/Makefile" ]; then
+          cd module
+          make clean || true  
+          make PLATFORM=linux ARCH=i386 -j$(nproc)
+        elif [ -f "src/Makefile" ]; then
+          cd src
+          make clean || true
+          make PLATFORM=linux ARCH=i386 -j$(nproc)
         fi
     
     - name: Find and collect Linux artifacts
       run: |
         mkdir -p linux-artifacts
         
-        # Look for .so files with csbot in the name
-        find . -name "*.so" -path "*/build-linux/*" -o -name "*csbot*.so" | while read file; do
+        echo "Searching for .so files in the entire repository..."
+        find . -name "*.so" -type f -print | while read file; do
+          echo "Found .so file: $file"
           cp "$file" linux-artifacts/
-          echo "Collected: $(basename $file)"
+          echo "Copied: $(basename $file)"
         done
         
-        # If no specific csbot files found, collect all .so files
-        if [ ! "$(ls -A linux-artifacts)" ]; then
-          echo "No csbot .so files found, searching for all .so files..."
-          find . -name "*.so" -type f | while read file; do
-            cp "$file" linux-artifacts/
-            echo "Collected: $(basename $file)"
-          done
+        # Also look in common build directories
+        for dir in Release Debug bin lib output build module/Release module/Debug; do
+          if [ -d "$dir" ]; then
+            echo "Checking directory: $dir"
+            find "$dir" -name "*.so" -o -name "*.dll" -o -name "*csbot*" | while read file; do
+              echo "Found in $dir: $file"
+              cp "$file" linux-artifacts/ 2>/dev/null || true
+            done
+          fi
+        done
+        
+        # If still no artifacts, create a placeholder to prevent upload failure
+        if [ ! "$(ls -A linux-artifacts 2>/dev/null)" ]; then
+          echo "No artifacts found, creating build log for debugging"
+          echo "Build completed but no .so files were generated" > linux-artifacts/build_log.txt
+          echo "Directory structure:" >> linux-artifacts/build_log.txt
+          find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "Makefile" -o -name "*.so" >> linux-artifacts/build_log.txt
         fi
         
-        # Also collect any executables
-        find . -type f -executable -name "*csbot*" | while read file; do
-          cp "$file" linux-artifacts/
-          echo "Collected executable: $(basename $file)"
-        done
-        
+        echo "Final artifacts directory contents:"
         ls -la linux-artifacts/
     
     - name: Upload Linux artifacts
@@ -175,6 +216,7 @@ jobs:
         name: linux-build
         path: linux-artifacts/
         retention-days: 30
+      if: always()  # Upload even if build partially failed
 
   create-release:
     needs: [build-windows, build-linux]
