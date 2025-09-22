@@ -42,11 +42,6 @@ jobs:
           cd alliedmodders
           git clone --recursive https://github.com/alliedmodders/hlsdk
           
-      - name: Prepare AMTL
-        run: |
-          cd alliedmodders
-          git clone --recursive https://github.com/alliedmodders/amtl
-          
       - name: Install AMBuild
         run: |
           cd alliedmodders
@@ -61,7 +56,7 @@ jobs:
         run: |
           mkdir build
           cd build
-          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk --amtl=../alliedmodders/amtl
+          python3 ../configure.py --metamod=../alliedmodders/metamod-hl1 --hlsdk=../alliedmodders/hlsdk
           
       - name: Run AMBuild
         run: |
